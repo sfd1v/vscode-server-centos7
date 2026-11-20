@@ -1,0 +1,78 @@
+name: Auto Sync Upstream
+
+on:
+  schedule:
+    # 每天 UTC 00:00（北京时间 08:00）运行一次
+    - cron: '0 0 * * *'
+  # 支持在 Actions 页面手动点击触发
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fork repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Detect upstream repo and default branch
+        id: upstream
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          # 如果设置了仓库变量 vars.UPSTREAM_REPO 则优先使用，否则自动从 API 获取 parent 仓库
+          UPSTREAM_URL="${{ vars.UPSTREAM_REPO }}"
+          UPSTREAM_BRANCH="${{ vars.UPSTREAM_BRANCH }}"
+
+          if [ -z "$UPSTREAM_URL" ]; then
+            UPSTREAM_URL=$(gh api "repos/$REPO" --jq '.parent.clone_url // empty')
+          fi
+
+          if [ -z "$UPSTREAM_URL" ]; then
+            echo "错误：无法自动获取上游仓库地址，请确认当前仓库是 Fork，或在 Repository Variables 中配置 UPSTREAM_REPO。"
+            exit 1
+          fi
+
+          if [ -z "$UPSTREAM_BRANCH" ]; then
+            UPSTREAM_BRANCH=$(gh api "repos/$REPO" --jq '.parent.default_branch // .default_branch // "main"')
+          fi
+
+          echo "url=$UPSTREAM_URL" >> "$GITHUB_OUTPUT"
+          echo "branch=$UPSTREAM_BRANCH" >> "$GITHUB_OUTPUT"
+          echo "Upstream URL: $UPSTREAM_URL"
+          echo "Upstream Branch: $UPSTREAM_BRANCH"
+
+      - name: Sync upstream branch
+        env:
+          UPSTREAM_URL: ${{ steps.upstream.outputs.url }}
+          BRANCH: ${{ steps.upstream.outputs.branch }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream "$UPSTREAM_URL"
+          git fetch upstream "$BRANCH" --tags
+
+          # 确保本地分支存在并对齐上游
+          if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+            git checkout "$BRANCH"
+          else
+            git checkout -b "$BRANCH" "upstream/$BRANCH"
+          fi
+
+          # 优先快进合并；若存在本地独有提交则尝试合并，如遇冲突则中止并提示
+          if ! git merge --ff-only "upstream/$BRANCH"; then
+            if ! git merge --no-edit "upstream/$BRANCH"; then
+              git merge --abort
+              echo "存在合并冲突，请手动处理后再同步。"
+              exit 1
+            fi
+          fi
+
+          git push origin "$BRANCH" --tags
