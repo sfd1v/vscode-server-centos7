@@ -26,7 +26,6 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
         run: |
-          # 如果设置了仓库变量 vars.UPSTREAM_REPO 则优先使用，否则自动从 API 获取 parent 仓库
           UPSTREAM_URL="${{ vars.UPSTREAM_REPO }}"
           UPSTREAM_BRANCH="${{ vars.UPSTREAM_BRANCH }}"
 
@@ -57,22 +56,16 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git remote add upstream "$UPSTREAM_URL"
-          git fetch upstream "$BRANCH" --tags
+          git fetch --no-tags upstream "$BRANCH"
 
-          # 确保本地分支存在并对齐上游
-          if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
-            git checkout "$BRANCH"
-          else
-            git checkout -b "$BRANCH" "upstream/$BRANCH"
-          fi
+          git checkout -B "$BRANCH" "origin/$BRANCH" 2>/dev/null || git checkout -b "$BRANCH" "upstream/$BRANCH"
 
-          # 优先快进合并；若存在本地独有提交则尝试合并，如遇冲突则中止并提示
           if ! git merge --ff-only "upstream/$BRANCH"; then
             if ! git merge --no-edit "upstream/$BRANCH"; then
               git merge --abort
-              echo "存在合并冲突，请手动处理后再同步。"
+              echo "合并冲突：本地分支与 upstream/$BRANCH 存在冲突，请手动处理。"
               exit 1
             fi
           fi
 
-          git push origin "$BRANCH" --tags
+          git push origin "$BRANCH"
